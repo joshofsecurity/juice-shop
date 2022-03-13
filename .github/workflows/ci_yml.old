@@ -50,6 +50,21 @@ jobs:
           npm run lint:config -- -f ./config/quiet.yml
           npm run lint:config -- -f ./config/tutorial.yml
           npm run lint:config -- -f ./config/unsafe.yml
+  coding-challenge-rsn:
+    runs-on: windows-latest
+    steps:
+      - name: "Check out Git repository"
+        uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f #v2: v2.3.4 available
+      - name: "Use Node.js 16"
+        uses: actions/setup-node@f1f314fca9dfce2769ece7d933488f076716723e #v1: v2.x available
+        with:
+          node-version: 16
+      - name: "Install CLI tools"
+        run: npm install -g @angular/cli
+      - name: "Install application"
+        run: npm install
+      - name: "Check coding challenges for accidental code discrepancies"
+        run: npm run rsn
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -115,6 +130,55 @@ jobs:
           ./cc-test-reporter sum-coverage build/reports/coverage/codeclimate.*.json -p 3
           ./cc-test-reporter upload-coverage
         shell: bash
+  e2e:
+    runs-on: windows-latest
+    if: github.repository == 'juice-shop/juice-shop'
+    steps:
+      - name: "Check out Git repository"
+        uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f #v2: v2.3.4 available
+      - name: "Use Node.js 16"
+        uses: actions/setup-node@f1f314fca9dfce2769ece7d933488f076716723e #v1: v2.x available
+        with:
+          node-version: 16
+      - name: "Install CLI tools"
+        run: npm install -g @angular/cli
+      - name: "Install application"
+        run: npm install
+      - name: "Execute end-to-end tests"
+        env:
+          SOLUTIONS_WEBHOOK: ${{ secrets.E2E_SOLUTIONS_WEBHOOK }}
+        uses: nick-invision/retry@45ba062d357edb3b29c4a94b456b188716f61020 #v2: 2.4.1 available
+        with:
+          timeout_minutes: 20
+          max_attempts: 2
+          command: |
+            set NODE_ENV=test
+            set SOLUTIONS_WEBHOOK="$env:SOLUTIONS_WEBHOOK"
+            npm run preprotractor:github
+            npm run e2e
+  e2e-in-subfolder:
+    runs-on: windows-latest
+    if: github.repository == 'juice-shop/juice-shop'
+    steps:
+      - name: "Check out Git repository"
+        uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f #v2: v2.3.4 available
+      - name: "Use Node.js 16"
+        uses: actions/setup-node@f1f314fca9dfce2769ece7d933488f076716723e #v1: v2.x available
+        with:
+          node-version: 16
+      - name: "Install CLI tools"
+        run: npm install -g @angular/cli
+      - name: "Install application"
+        run: npm install
+      - name: "Execute end-to-end tests with application hosted in subfolder"
+        uses: nick-invision/retry@45ba062d357edb3b29c4a94b456b188716f61020 #v2: 2.4.1 available
+        with:
+          timeout_minutes: 20
+          max_attempts: 2
+          command: |
+            set NODE_ENV=test
+            npm run preprotractor:github
+            npm run e2e -- subfolder
   smoke:
     runs-on: ubuntu-latest
     steps:
@@ -158,7 +222,7 @@ jobs:
         run: docker-compose -f docker-compose.test.yml up --exit-code-from sut
   docker:
     if: github.repository == 'juice-shop/juice-shop' && github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/master')
-    needs: [test, docker-test]
+    needs: [test, e2e, docker-test]
     runs-on: ubuntu-latest
     steps:
       - name: "Check out Git repository"
@@ -205,11 +269,37 @@ jobs:
           build-args: |
             VCS_REF=${{ env.VCS_REF }}
             BUILD_DATE=${{ env.BUILD_DATE }}
+  heroku:
+    if: github.repository == 'juice-shop/juice-shop' && github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/master')
+    needs: [test, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check out Git repository"
+        uses: actions/checkout@5a4ac9002d0be2fb38bd78e4b4dbde5606d7042f #v2: v2.3.4 available
+      - name: "Set Heroku app & branch for ${{ github.ref }}"
+        run: |
+          if [ "$GITHUB_REF" == "refs/heads/master" ]; then
+          echo "HEROKU_APP=juice-shop" >> $GITHUB_ENV
+          echo "HEROKU_BRANCH=master" >> $GITHUB_ENV
+          else
+          echo "HEROKU_APP=juice-shop-staging" >> $GITHUB_ENV
+          echo "HEROKU_BRANCH=develop" >> $GITHUB_ENV
+          fi
+      - name: "Deploy ${{ github.ref }} to Heroku"
+        uses: akhileshns/heroku-deploy@79ef2ae4ff9b897010907016b268fd0f88561820 #v3.12.12
+        with:
+          heroku_api_key: ${{ secrets.HEROKU_API_KEY }}
+          heroku_app_name: ${{ env.HEROKU_APP }}
+          heroku_email: bjoern.kimminich@owasp.org
+          branch: ${{ env.HEROKU_BRANCH }}
   notify-slack:
     if: github.repository == 'juice-shop/juice-shop' && github.event_name == 'push' && (success() || failure())
     needs:
       - docker
+      - heroku
       - lint
+      - coding-challenge-rsn
+      - e2e-in-subfolder
       - smoke
     runs-on: ubuntu-latest
     steps:
